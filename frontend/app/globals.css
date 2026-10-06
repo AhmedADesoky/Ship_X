@@ -1,0 +1,196 @@
+@import "tailwindcss";
+@import "tw-animate-css";
+@import "shadcn/tailwind.css";
+
+@custom-variant dark (&:is(.dark *));
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --font-sans: var(--font-sans);
+  --font-mono: var(--font-geist-mono);
+  --font-heading: var(--font-sans);
+  --color-sidebar-ring: var(--sidebar-ring);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+  --color-sidebar-primary: var(--sidebar-primary);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar: var(--sidebar);
+  --color-chart-5: var(--chart-5);
+  --color-chart-4: var(--chart-4);
+  --color-chart-3: var(--chart-3);
+  --color-chart-2: var(--chart-2);
+  --color-chart-1: var(--chart-1);
+  --color-ring: var(--ring);
+  --color-input: var(--input);
+  --color-border: var(--border);
+  --color-destructive: var(--destructive);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-accent: var(--accent);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-muted: var(--muted);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-secondary: var(--secondary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-primary: var(--primary);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-popover: var(--popover);
+  --color-card-foreground: var(--card-foreground);
+  --color-card: var(--card);
+  --radius-sm: calc(var(--radius) * 0.6);
+  --radius-md: calc(var(--radius) * 0.8);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) * 1.4);
+  --radius-2xl: calc(var(--radius) * 1.8);
+  --radius-3xl: calc(var(--radius) * 2.2);
+  --radius-4xl: calc(var(--radius) * 2.6);
+}
+
+/*
+ * Design tokens: WHITE-DOMINANT, light-only (no dark mode). Navy lives in
+ * the sidebar/text/accents, grey is used for secondary surfaces, and one
+ * restrained navy accent covers charts/badges. Radii are generous (16-24px)
+ * and buttons render pill-shaped (see .btn/pill utilities and Button
+ * overrides lower in this file).
+ */
+:root {
+  --background: oklch(0.99 0.002 240);
+  --foreground: oklch(0.22 0.03 255);
+  --card: oklch(1 0 0);
+  --card-foreground: oklch(0.22 0.03 255);
+  --popover: oklch(1 0 0);
+  --popover-foreground: oklch(0.22 0.03 255);
+  --primary: oklch(0.28 0.06 260);
+  --primary-foreground: oklch(0.98 0.003 240);
+  --secondary: oklch(0.95 0.006 250);
+  --secondary-foreground: oklch(0.28 0.06 260);
+  --muted: oklch(0.96 0.005 250);
+  --muted-foreground: oklch(0.5 0.02 255);
+  --accent: oklch(0.93 0.02 258);
+  --accent-foreground: oklch(0.28 0.06 260);
+  --destructive: oklch(0.577 0.245 27.325);
+  --border: oklch(0.93 0.006 250);
+  --input: oklch(0.93 0.006 250);
+  --ring: oklch(0.55 0.05 258);
+  --chart-1: oklch(0.55 0.09 258);
+  --chart-2: oklch(0.65 0.06 220);
+  --chart-3: oklch(0.75 0.03 250);
+  --chart-4: oklch(0.5 0.02 255);
+  --chart-5: oklch(0.35 0.04 258);
+  --radius: 1.1rem;
+  /* Sidebar is the solid-navy anchor — the one dark surface in an otherwise
+     white UI, contrasting the white main canvas. */
+  --sidebar: oklch(0.22 0.045 260);
+  --sidebar-foreground: oklch(0.94 0.008 250);
+  --sidebar-primary: oklch(0.98 0.003 240);
+  --sidebar-primary-foreground: oklch(0.22 0.045 260);
+  --sidebar-accent: oklch(0.32 0.05 260);
+  --sidebar-accent-foreground: oklch(0.98 0.003 240);
+  --sidebar-border: oklch(1 0 0 / 10%);
+  --sidebar-ring: oklch(0.6 0.05 258);
+  --glass-bg: oklch(1 0 0 / 70%);
+  --glass-border: oklch(0.9 0.01 250 / 80%);
+}
+
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+  }
+  body {
+    @apply bg-background text-foreground scrollbar-hide;
+    background-image: radial-gradient(at top, oklch(0.95 0.02 258 / 35%), transparent 60%);
+  }
+  html {
+    @apply font-sans scrollbar-hide;
+  }
+}
+
+/* Frosted-glass surface used for cards/modals to get the soft, "iOS 26"
+   look on a light surface — a translucent white background plus a blur so
+   content behind it shows through subtly, with a soft navy-tinted shadow. */
+.glass {
+  background: var(--glass-bg);
+  border: 1px solid var(--glass-border);
+  backdrop-filter: blur(20px) saturate(150%);
+  -webkit-backdrop-filter: blur(20px) saturate(150%);
+  box-shadow: 0 1px 2px oklch(0.22 0.03 255 / 4%), 0 8px 24px oklch(0.22 0.03 255 / 6%);
+}
+
+/* Pill-shaped buttons with soft shadows. shadcn's Button already sets
+   rounded-md; this raises it to fully-pill and adds the soft-shadow look
+   across every Button variant without editing the generated component. */
+button[data-slot="button"] {
+  border-radius: 999px;
+  box-shadow: 0 1px 2px oklch(0.22 0.03 255 / 6%), 0 4px 12px oklch(0.22 0.03 255 / 6%);
+}
+
+/* Icon-only buttons (icon-xs/icon-sm/icon) and Select/Dropdown triggers are
+   visually small (24-32px) by design, but on a touch device that's below a
+   comfortable ~40px tap target. Rather than resizing them (which would
+   throw off density on desktop), expand the actual hit area on
+   coarse-pointer (touch) devices with an invisible ::after overlay, leaving
+   the visual size untouched. */
+@media (pointer: coarse) {
+  button[data-slot="button"][data-size="icon-xs"],
+  button[data-slot="button"][data-size="icon-sm"],
+  button[data-slot="button"][data-size="icon"],
+  [data-slot="select-trigger"],
+  [data-slot="dropdown-menu-trigger"],
+  [data-slot="sidebar-trigger"] {
+    position: relative;
+  }
+  button[data-slot="button"][data-size="icon-xs"]::after,
+  button[data-slot="button"][data-size="icon-sm"]::after,
+  button[data-slot="button"][data-size="icon"]::after,
+  [data-slot="select-trigger"]::after,
+  [data-slot="dropdown-menu-trigger"]::after,
+  [data-slot="sidebar-trigger"]::after {
+    content: "";
+    position: absolute;
+    inset: -6px;
+  }
+}
+
+/* Hide native number-input spinner arrows everywhere — the design system
+   doesn't have a matching visual for the OS default control. A dedicated
+   NumberInput component can still be layered on top of specific fields;
+   this is the app-wide fallback. */
+input[type="number"] {
+  -moz-appearance: textfield;
+}
+input[type="number"]::-webkit-inner-spin-button,
+input[type="number"]::-webkit-outer-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+
+/* Hidden-scrollbar utility (Tailwind v4 CSS-first @utility) — keeps the
+   iOS-style "invisible" scroll affordance used elsewhere in the design
+   system, for the page scrollbar and any internal scroll container
+   (sidebar content, dialog/sheet content, table wrappers). */
+@utility scrollbar-hide {
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+  &::-webkit-scrollbar {
+    display: none;
+  }
+}
+
+/* Print-only page setup (Phase 39a) — the browser's print-to-PDF dialog
+   previously used its unconfigured default size/margins, with nothing
+   preventing a table row or summary card from splitting across a page
+   break. PrintableStatement is the only thing meant to print (everything
+   else is print:hidden), so a single page rule here covers every export. */
+@media print {
+  @page {
+    size: A4;
+    margin: 14mm;
+  }
+}
+
+@utility print-avoid-break {
+  break-inside: avoid;
+  page-break-inside: avoid;
+}

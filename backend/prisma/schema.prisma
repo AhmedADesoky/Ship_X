@@ -1,0 +1,587 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum Role {
+  OWNER
+  MANAGER
+  ACCOUNTANT
+  EMPLOYEE
+}
+
+enum TransactionKind {
+  IN
+  OUT
+  TRANSFER
+}
+
+enum CategoryKind {
+  IN
+  OUT
+}
+
+enum PendingStatus {
+  PENDING
+  APPROVED
+  REJECTED
+}
+
+model User {
+  id           String   @id @default(uuid())
+  email        String   @unique
+  passwordHash String?  @map("password_hash")
+  name         String
+  // Free-form display label (e.g. "Senior Accountant") shown alongside the
+  // real Role, which stays the source of truth for access control. Purely
+  // cosmetic — see RolePermission for actually-enforced extra permissions.
+  title        String?
+  role         Role     @default(EMPLOYEE)
+  active       Boolean  @default(true)
+  avatarUrl    String?  @map("avatar_url")
+  createdAt    DateTime @default(now()) @map("created_at")
+  updatedAt    DateTime @updatedAt @map("updated_at")
+
+  // Password reset: only a bcrypt hash of the reset token is stored (never
+  // the token itself), with a short expiry — mirrors how passwordHash never
+  // stores the plaintext password.
+  resetTokenHash      String?   @map("reset_token_hash")
+  resetTokenExpiresAt DateTime? @map("reset_token_expires_at")
+
+  // Optional TOTP MFA. mfaTempSecret holds a newly-generated secret between
+  // /mfa/enroll and /mfa/verify (not yet trusted); it's promoted to
+  // mfaSecret + mfaEnabled=true only once the user proves possession of it
+  // with a valid code, so a login session can't silently gain MFA the user
+  // never actually confirmed.
+  mfaEnabled    Boolean @default(false) @map("mfa_enabled")
+  mfaSecret     String? @map("mfa_secret")
+  mfaTempSecret String? @map("mfa_temp_secret")
+
+  // Account-level lockout, complementing the IP-based login throttle — an
+  // attacker distributing attempts across many IPs can't be stopped by
+  // per-IP rate limiting alone. Reset to 0 on any successful login.
+  failedLoginCount Int       @default(0) @map("failed_login_count")
+  lockedUntil      DateTime? @map("locked_until")
+
+  createdTransactions Transaction[]     @relation("TransactionCreatedBy")
+  createdSettlements  PartySettlement[] @relation("SettlementCreatedBy")
+  auditLogs           AuditLog[]
+  rolePermissions     RolePermission[]
+  pendingActions      PendingAction[]   @relation("PendingActionActor")
+  reviewedActions     PendingAction[]   @relation("PendingActionReviewer")
+  refreshTokens       RefreshToken[]
+
+  @@map("users")
+}
+
+// Backs real refresh-token rotation + revocation — the JWT's own exp claim
+// is no longer the sole source of truth for "is this refresh token still
+// valid"; this table is. Only a hash of the token is ever stored (never
+// the raw token), mirroring User.resetTokenHash. A presented token whose
+// row is already revoked is a reuse-of-a-stolen-token signal — see
+// AuthService.refresh()'s handling of that case.
+model RefreshToken {
+  id                String    @id @default(uuid())
+  userId            String    @map("user_id")
+  user              User      @relation(fields: [userId], references: [id])
+  tokenHash         String    @unique @map("token_hash")
+  issuedAt          DateTime  @default(now()) @map("issued_at")
+  expiresAt         DateTime  @map("expires_at")
+  revokedAt         DateTime? @map("revoked_at")
+  replacedByTokenId String?   @map("replaced_by_token_id")
+
+  @@index([userId])
+  @@index([expiresAt])
+  @@map("refresh_tokens")
+}
+
+// Per-user extra permission grants layered on top of the static role ->
+// permission matrix in role-permissions.ts (e.g. an EMPLOYEE additionally
+// granted "manage_clients"). `role` records what the user's role was at
+// grant time for audit purposes; it is not part of the uniqueness key —
+// only one row per (user, permission) makes sense.
+model RolePermission {
+  id         String  @id @default(uuid())
+  role       Role
+  permission String
+  userId     String? @map("user_id")
+  user       User?   @relation(fields: [userId], references: [id])
+
+  @@unique([userId, permission])
+  @@index([role])
+  @@map("role_permissions")
+}
+
+model Safe {
+  id             String   @id @default(uuid())
+  name           String
+  // Free-form safe type (e.g. "CASH", "BANK", or any custom label the user
+  // adds) rather than a fixed enum, so new safe categories don't need a
+  // migration. "CASH" and "OTHER" remain the default suggestions in the UI.
+  type           String   @default("CASH")
+  isMain         Boolean  @default(false) @map("is_main")
+  openingBalance Decimal  @default(0) @db.Decimal(14, 2) @map("opening_balance")
+  // Soft-delete: a "deleted" safe is deactivated, never hard-removed — it
+  // has FK history (transactions, drawings, reconciliations) that must
+  // survive for audit/reporting, and Postgres would reject a hard delete
+  // with rows still referencing it anyway.
+  active         Boolean  @default(true)
+  createdAt      DateTime @default(now()) @map("created_at")
+
+  transactions      Transaction[]
+  reconciliations   Reconciliation[]
+  partyDrawings     PartyDrawing[]
+  partyDeferredPayments PartyDeferredPayment[]
+  partySettlements  PartySettlement[]
+  courierSheetCollections   CourierSheetCollection[]
+  courierAdvances           CourierAdvance[]
+  courierAdvanceRepayments  CourierAdvanceRepayment[]
+
+  @@map("safes")
+}
+
+// بنود (income/expense categories)
+model Category {
+  id        String       @id @default(uuid())
+  name      String
+  kind      CategoryKind
+  active    Boolean      @default(true)
+  createdAt DateTime     @default(now()) @map("created_at")
+
+  // Which party type a transaction under this category requires (a party
+  // search field is then shown to pick one), independent of the category's
+  // display name — matching by name is fragile (renaming a category used
+  // to silently break the agent/merchant party linkage entirely). Null
+  // means no party is attached to this category.
+  partyType String? @map("party_type")
+
+  // Fixed system role this category plays in internal flows (which
+  // category createDrawing()/resetSystem() reseeding target), independent
+  // of the user-editable display `name` — same rationale as partyType
+  // above. Null means this is an ordinary user category with no fixed role.
+  systemKey String? @unique @map("system_key")
+
+  // Parallel to partyType, but for مناديب القاهرة والجيزة (Courier) —
+  // deliberately a separate boolean, not a third partyType value, since a
+  // Courier is NOT a Party (see the schema comment above the Courier
+  // model). Mutually exclusive with partyType, enforced in
+  // CategoriesService — a category requires a Party OR a Courier, never
+  // both. When true, a transaction under this category shows a courier
+  // picker and must carry Transaction.courierId.
+  requiresCourier Boolean @default(false) @map("requires_courier")
+
+  transactions Transaction[]
+
+  @@unique([name, kind])
+  @@index([partyType, kind])
+  @@map("categories")
+}
+
+// الرواسل / وكلاء المحافظات — simple transactional counterparties,
+// distinct from the drawings/deferred-ledger Client model.
+//
+// partyType is a free-form string (like Safe.type) rather than a fixed
+// enum, so users can add their own party types from the UI. "AGENT" and
+// "MERCHANT" remain the two canonical values with special meaning to
+// PartiesService.assertUsable() (they gate which categories a party can
+// attach to); any other custom type is accepted for general
+// classification but isn't tied to that category logic.
+model Party {
+  id        String   @id @default(uuid())
+  name      String   @unique
+  partyType String   @map("party_type")
+  province  String?
+  phone     String?
+  notes     String?
+  active    Boolean  @default(true)
+  createdAt DateTime @default(now()) @map("created_at")
+
+  transactions Transaction[]
+  drawings     PartyDrawing[]
+  deferred     PartyDeferred[]
+  settlements  PartySettlement[]
+
+  @@index([partyType])
+  @@map("parties")
+}
+
+// مسحوبات (drawings) — mirrors ClientDrawing
+model PartyDrawing {
+  id            String   @id @default(uuid())
+  partyId       String   @map("party_id")
+  party         Party    @relation(fields: [partyId], references: [id])
+  safeId        String   @map("safe_id")
+  safe          Safe     @relation(fields: [safeId], references: [id])
+  amount        Decimal  @db.Decimal(14, 2)
+  transactionId String?  @map("transaction_id")
+  // Legacy UI hint from the retired "إعادة إدخال" flow — superseded by
+  // WithdrawalApplication (real per-drawing application ledger). No longer
+  // written by new code; kept only until the Phase 22 backfill review is
+  // complete, then dropped in a separate migration.
+  redepositTransactionId String? @map("redeposit_transaction_id")
+  date          DateTime @default(now())
+  note          String?
+  createdAt     DateTime @default(now()) @map("created_at")
+
+  // Administrative cancellation (data-entry mistake), never a reversal of
+  // real money — only permitted while nothing has been applied against this
+  // drawing yet (see SettlementsService.cancelDrawing). If money actually
+  // returned, that must be a real Transaction per existing architecture.
+  cancelled     Boolean   @default(false)
+  cancelledAt   DateTime? @map("cancelled_at")
+  cancelledById String?   @map("cancelled_by")
+  cancelledNote String?   @map("cancelled_note")
+
+  applications WithdrawalApplication[]
+
+  @@index([partyId])
+  @@index([safeId])
+  @@index([createdAt])
+  @@map("party_drawings")
+}
+
+// A سرواسل settlement: the sender's periodic main payout. Records the
+// gross amount reported by operations, how much of it was applied against
+// the sender's outstanding withdrawals (via WithdrawalApplication), and the
+// net cash that actually left the safe — which is what the linked
+// Transaction's amount equals. Deliberately its own entity rather than
+// fields bolted onto Transaction, mirroring how PartyDrawing/PartyDeferred
+// already sit beside Transaction rather than extending it — keeps
+// Transaction.amount meaning "actual cash movement" everywhere (dashboard
+// non-double-counting depends on this invariant).
+model PartySettlement {
+  id              String   @id @default(uuid())
+  partyId         String   @map("party_id")
+  party           Party    @relation(fields: [partyId], references: [id])
+  safeId          String   @map("safe_id")
+  safe            Safe     @relation(fields: [safeId], references: [id])
+  grossAmount     Decimal  @db.Decimal(14, 2) @map("gross_amount")
+  appliedAmount   Decimal  @db.Decimal(14, 2) @map("applied_amount")
+  netAmount       Decimal  @db.Decimal(14, 2) @map("net_amount")
+  // Null when netAmount is 0 — fully covered by applied withdrawals, so no
+  // cash actually moved and no Transaction is created.
+  transactionId   String?  @map("transaction_id")
+  note            String?
+  date            DateTime @default(now())
+  createdById     String?  @map("created_by")
+  createdBy       User?    @relation("SettlementCreatedBy", fields: [createdById], references: [id])
+  // POSTED | VOIDED — flips to VOIDED when the linked Transaction is voided.
+  status          String   @default("POSTED")
+  // Idempotency key for double-submission/race protection — a repeat
+  // request with the same key returns the already-created settlement
+  // instead of double-posting.
+  clientRequestId String?  @unique @map("client_request_id")
+  createdAt       DateTime @default(now()) @map("created_at")
+
+  applications WithdrawalApplication[]
+
+  @@index([partyId])
+  @@index([safeId])
+  @@index([createdAt])
+  @@index([transactionId])
+  @@map("party_settlements")
+}
+
+// One row = "this much of this specific withdrawal was applied against
+// this specific settlement." Many-to-one in both directions: one drawing
+// can be applied across several settlements over time (partially each
+// time), and one settlement can apply several different drawings at once.
+// Outstanding/applied/remaining per drawing is always derived live from
+// this table — never stored as a running total — mirroring how
+// PartyDeferredPayment already works for آجل, generalized from one
+// deferred-record to many drawings per settlement.
+model WithdrawalApplication {
+  id           String          @id @default(uuid())
+  drawingId    String          @map("drawing_id")
+  drawing      PartyDrawing    @relation(fields: [drawingId], references: [id])
+  settlementId String          @map("settlement_id")
+  settlement   PartySettlement @relation(fields: [settlementId], references: [id])
+  amount       Decimal         @db.Decimal(14, 2)
+  createdAt    DateTime        @default(now()) @map("created_at")
+
+  @@index([drawingId])
+  @@index([settlementId])
+  @@map("withdrawal_applications")
+}
+
+// آجل (deferred) — mirrors ClientDeferred
+model PartyDeferred {
+  id              String   @id @default(uuid())
+  partyId         String   @map("party_id")
+  party           Party    @relation(fields: [partyId], references: [id])
+  originalAmount  Decimal  @db.Decimal(14, 2) @map("original_amount")
+  remainingAmount Decimal  @db.Decimal(14, 2) @map("remaining_amount")
+  createdAt       DateTime @default(now()) @map("created_at")
+
+  payments PartyDeferredPayment[]
+
+  @@index([partyId])
+  @@index([createdAt])
+  @@index([partyId, remainingAmount])
+  @@map("party_deferred")
+}
+
+model PartyDeferredPayment {
+  id            String        @id @default(uuid())
+  deferredId    String        @map("deferred_id")
+  deferred      PartyDeferred @relation(fields: [deferredId], references: [id])
+  safeId        String        @map("safe_id")
+  safe          Safe          @relation(fields: [safeId], references: [id])
+  amount        Decimal       @db.Decimal(14, 2)
+  transactionId String?       @map("transaction_id")
+  date          DateTime      @default(now())
+  createdAt     DateTime      @default(now()) @map("created_at")
+
+  @@index([deferredId])
+  @@index([safeId])
+  @@index([createdAt])
+  @@map("party_deferred_payments")
+}
+
+// ============================================================
+// مناديب القاهرة والجيزة (Cairo & Giza Couriers) — deliberately NOT a
+// Party/AGENT: Party+partyType='AGENT' already means something else in
+// this app (وكلاء المحافظات, a one-directional "company is owed money"
+// ledger via PartyDeferred). A courier's advance/repayment lifecycle is
+// bidirectional (OUT at creation, IN on repayment) and structurally
+// couldn't be represented by PartyDeferred without corrupting that
+// existing semantics — see Phase 24 of the plan file.
+//
+// HARD BUSINESS RULE: CourierSheetCollection and CourierAdvance are
+// completely independent ledgers. Never compute one minus the other,
+// anywhere, for any reason. See CouriersService.summary().
+// ============================================================
+
+model Courier {
+  id        String   @id @default(uuid())
+  name      String   @unique
+  phone     String?
+  notes     String?
+  active    Boolean  @default(true)
+  createdAt DateTime @default(now()) @map("created_at")
+
+  sheetCollections CourierSheetCollection[]
+  advances         CourierAdvance[]
+  // Generic transactions tagged via a custom Category.requiresCourier
+  // category — separate from sheetCollections/advances above, which have
+  // their own dedicated lifecycle/tables.
+  transactions     Transaction[]
+
+  @@map("couriers")
+}
+
+// Historical/opening sheet collections (money collected before this
+// system existed) are first-class — courierId is genuinely nullable, not
+// a sentinel "Unassigned" row, per explicit business requirement.
+model CourierSheetCollection {
+  id            String   @id @default(uuid())
+  courierId     String?  @map("courier_id")
+  courier       Courier? @relation(fields: [courierId], references: [id])
+  safeId        String   @map("safe_id")
+  safe          Safe     @relation(fields: [safeId], references: [id])
+  amount        Decimal  @db.Decimal(14, 2)
+  transactionId String?  @map("transaction_id")
+  note          String?
+  // Purely descriptive audit metadata — which screen the entry was created
+  // from ("COURIER_PAGE" | "INCOME_PAGE"). Never read by any total,
+  // aggregate, or validation logic. Nullable with a DB default so existing
+  // rows need no backfill.
+  source        String?  @default("COURIER_PAGE")
+  date          DateTime @default(now())
+  createdById   String?  @map("created_by")
+  createdAt     DateTime @default(now()) @map("created_at")
+
+  @@index([courierId])
+  @@index([safeId])
+  @@index([createdAt])
+  @@map("courier_sheet_collections")
+}
+
+// courierId NOT nullable — an advance always targets a specific courier.
+// Carries originalAmount/remainingAmount (like PartyDeferred) AND is a
+// real OUT transaction at creation time (unlike PartyDeferred, which
+// creates no transaction) — an advance is real cash leaving immediately.
+model CourierAdvance {
+  id              String   @id @default(uuid())
+  courierId       String   @map("courier_id")
+  courier         Courier  @relation(fields: [courierId], references: [id])
+  safeId          String   @map("safe_id")
+  safe            Safe     @relation(fields: [safeId], references: [id])
+  originalAmount  Decimal  @db.Decimal(14, 2) @map("original_amount")
+  remainingAmount Decimal  @db.Decimal(14, 2) @map("remaining_amount")
+  transactionId   String?  @map("transaction_id")
+  note            String?
+  // OPEN | PARTIALLY_REPAID | FULLY_REPAID
+  status          String   @default("OPEN")
+  createdById     String?  @map("created_by")
+  createdAt       DateTime @default(now()) @map("created_at")
+
+  repayments CourierAdvanceRepayment[]
+
+  @@index([courierId])
+  @@index([safeId])
+  @@index([createdAt])
+  @@index([courierId, remainingAmount])
+  @@map("courier_advances")
+}
+
+// Direct FK to one advance (mirrors PartyDeferredPayment -> PartyDeferred)
+// — a courier's advance lifecycle is one advance, decremented by its own
+// repayments, not FIFO-spread across several advances at once.
+model CourierAdvanceRepayment {
+  id            String         @id @default(uuid())
+  advanceId     String         @map("advance_id")
+  advance       CourierAdvance @relation(fields: [advanceId], references: [id])
+  safeId        String         @map("safe_id")
+  safe          Safe           @relation(fields: [safeId], references: [id])
+  amount        Decimal        @db.Decimal(14, 2)
+  transactionId String?        @map("transaction_id")
+  date          DateTime       @default(now())
+  createdById   String?        @map("created_by")
+  createdAt     DateTime       @default(now()) @map("created_at")
+
+  @@index([advanceId])
+  @@index([safeId])
+  @@index([createdAt])
+  @@map("courier_advance_repayments")
+}
+
+model Reconciliation {
+  id              String   @id @default(uuid())
+  safeId          String   @map("safe_id")
+  safe            Safe     @relation(fields: [safeId], references: [id])
+  reconDate       DateTime @map("recon_date")
+  expectedBalance Decimal  @db.Decimal(14, 2) @map("expected_balance")
+  actualBalance   Decimal  @db.Decimal(14, 2) @map("actual_balance")
+  difference      Decimal  @db.Decimal(14, 2)
+  note            String?
+  createdById     String?  @map("created_by")
+  createdAt       DateTime @default(now()) @map("created_at")
+
+  @@index([safeId])
+  @@map("reconciliations")
+}
+
+model AppSetting {
+  key       String   @id
+  value     String
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@map("app_settings")
+}
+
+model ImportBatch {
+  id            String    @id @default(uuid())
+  filename      String
+  fileHash      String    @map("file_hash")
+  status        String    @default("RUNNING")
+  rowsRead      Int       @default(0) @map("rows_read")
+  rowsImported  Int       @default(0) @map("rows_imported")
+  rowsSkipped   Int       @default(0) @map("rows_skipped")
+  rowsReview    Int       @default(0) @map("rows_review")
+  incomeTotal   Decimal   @default(0) @db.Decimal(14, 2) @map("income_total")
+  expenseTotal  Decimal   @default(0) @db.Decimal(14, 2) @map("expense_total")
+  notes         String?
+  createdById   String?   @map("created_by")
+  startedAt     DateTime  @default(now()) @map("started_at")
+  completedAt   DateTime? @map("completed_at")
+
+  @@unique([fileHash])
+  @@map("import_batches")
+}
+
+model Transaction {
+  id                  String            @id @default(uuid())
+  safeId              String            @map("safe_id")
+  safe                Safe              @relation(fields: [safeId], references: [id])
+  kind                TransactionKind
+  amount              Decimal           @db.Decimal(14, 2)
+  categoryId          String?           @map("category_id")
+  category            Category?         @relation(fields: [categoryId], references: [id])
+  partyId             String?           @map("party_id")
+  party               Party?            @relation(fields: [partyId], references: [id])
+  // Parallel, independent linkage to partyId — a generic transaction under
+  // a category with Category.requiresCourier=true. NOT the same mechanism
+  // the dedicated Couriers module uses for sheet collections/advances/
+  // repayments (those own their own side-table + transactionId link) —
+  // this is for a custom بند like "غرامة مندوب" that just needs to tag
+  // which courier it's about, with no ledger lifecycle of its own.
+  courierId           String?           @map("courier_id")
+  courier             Courier?          @relation(fields: [courierId], references: [id])
+  referenceNo         String?           @map("reference_no")
+  notes               String?
+  description         String?
+  createdById         String?           @map("created_by")
+  createdBy           User?             @relation("TransactionCreatedBy", fields: [createdById], references: [id])
+  status              String            @default("POSTED")
+  relatedTransactionId String?          @map("related_transaction_id")
+  relatedTransaction   Transaction?     @relation("RelatedTransaction", fields: [relatedTransactionId], references: [id])
+  relatedTransactions  Transaction[]    @relation("RelatedTransaction")
+  importBatchId       String?           @map("import_batch_id")
+  createdAt           DateTime          @default(now()) @map("created_at")
+
+  @@index([safeId])
+  @@index([categoryId])
+  @@index([partyId])
+  @@index([courierId])
+  @@index([createdAt])
+  @@index([status, createdAt])
+  @@index([partyId, status])
+  @@index([safeId, status])
+  @@index([categoryId, status])
+  @@index([relatedTransactionId])
+  @@map("transactions")
+}
+
+// Queued edit/delete actions submitted by an Employee, awaiting
+// Owner/Manager approval before they take effect. Approval re-dispatches
+// the stored method+route+payload through the same service layer the
+// original controller would have called.
+model PendingAction {
+  id           String        @id @default(uuid())
+  actorId      String        @map("actor_id")
+  actor        User          @relation("PendingActionActor", fields: [actorId], references: [id])
+  method       String
+  route        String
+  entityType   String        @map("entity_type")
+  entityId     String?       @map("entity_id")
+  payload      Json
+  status       PendingStatus @default(PENDING)
+  reviewedById String?       @map("reviewed_by")
+  reviewedBy   User?         @relation("PendingActionReviewer", fields: [reviewedById], references: [id])
+  reviewedAt   DateTime?     @map("reviewed_at")
+  createdAt    DateTime      @default(now()) @map("created_at")
+
+  @@index([status])
+  @@index([actorId])
+  @@map("pending_actions")
+}
+
+model AuditLog {
+  id         String   @id @default(uuid())
+  actorId    String?  @map("actor_id")
+  actor      User?    @relation(fields: [actorId], references: [id])
+  action     String
+  entityType String   @map("entity_type")
+  entityId   String?  @map("entity_id")
+  semanticAction String? @map("semantic_action")
+  entityLabel    String? @map("entity_label")
+  before     Json?
+  after      Json?
+  // Null for the pre-existing success-only log rows; set for the new
+  // failure-path logging (401/403/400 on a mutating request) — lets a
+  // reader distinguish "this succeeded" from "this was rejected" at a
+  // glance instead of every row looking like a successful action.
+  statusCode Int?     @map("status_code")
+  createdAt  DateTime @default(now()) @map("created_at")
+
+  @@index([actorId])
+  @@index([entityType, entityId])
+  @@index([createdAt])
+  @@index([actorId, createdAt])
+  @@map("audit_logs")
+}
