@@ -31,8 +31,11 @@ describe('SettingsService', () => {
     safe: any[];
   };
 
+  let deleteOrder: string[];
+
   const makeCollection = (key: keyof typeof state) => ({
     deleteMany: jest.fn(() => {
+      deleteOrder.push(key);
       const count = state[key].length;
       state[key] = [];
       return Promise.resolve({ count });
@@ -57,6 +60,7 @@ describe('SettingsService', () => {
   };
 
   beforeEach(async () => {
+    deleteOrder = [];
     state = {
       partyDeferredPayment: [{ id: 'pdp1' }],
       partyDeferred: [{ id: 'pd1' }],
@@ -117,6 +121,17 @@ describe('SettingsService', () => {
       expect(state.category).toHaveLength(1);
       expect(state.safe).toHaveLength(1);
     });
+
+    // Regression test: withdrawal_applications.drawing_id/settlement_id
+    // are FKs into party_drawings/party_settlements — deleting those
+    // parents first throws a live FK-violation error that this repo's
+    // simple in-memory $transaction mock can't itself catch, so this
+    // asserts the actual delete ORDER instead.
+    it('deletes withdrawalApplication and partySettlement before partyDrawing (FK order)', async () => {
+      await service.clearNumbers('CLEAR');
+      expect(deleteOrder.indexOf('withdrawalApplication')).toBeLessThan(deleteOrder.indexOf('partyDrawing'));
+      expect(deleteOrder.indexOf('partySettlement')).toBeLessThan(deleteOrder.indexOf('partyDrawing'));
+    });
   });
 
   describe('resetSystem()', () => {
@@ -140,6 +155,12 @@ describe('SettingsService', () => {
       // categories (see common/system-categories.ts) — not left empty.
       expect(state.category.length).toBeGreaterThan(0);
       expect(state.category.every((c: any) => c.systemKey)).toBe(true);
+    });
+
+    it('deletes withdrawalApplication and partySettlement before partyDrawing (FK order)', async () => {
+      await service.resetSystem('RESET');
+      expect(deleteOrder.indexOf('withdrawalApplication')).toBeLessThan(deleteOrder.indexOf('partyDrawing'));
+      expect(deleteOrder.indexOf('partySettlement')).toBeLessThan(deleteOrder.indexOf('partyDrawing'));
     });
   });
 });

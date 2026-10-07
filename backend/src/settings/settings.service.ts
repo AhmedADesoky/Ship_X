@@ -40,13 +40,14 @@ export class SettingsService {
     await this.prisma.$transaction([
       this.prisma.partyDeferredPayment.deleteMany(),
       this.prisma.partyDeferred.deleteMany(),
-      this.prisma.partyDrawing.deleteMany(),
-      // Also missing until now (Phase 24 incidental fix) — a reset
-      // previously left orphaned settlement-ledger rows behind since
-      // these two tables were added (Phase 22) after resetSystem() was
-      // last touched.
+      // withdrawalApplication (and partySettlement, which it also
+      // references) must be deleted BEFORE partyDrawing — it holds FKs to
+      // both, and partyDrawing was previously deleted first, violating
+      // withdrawal_applications_drawing_id_fkey the moment any party had
+      // ever had an application recorded against a drawing.
       this.prisma.withdrawalApplication.deleteMany(),
       this.prisma.partySettlement.deleteMany(),
+      this.prisma.partyDrawing.deleteMany(),
       this.prisma.courierAdvanceRepayment.deleteMany(),
       this.prisma.courierAdvance.deleteMany(),
       this.prisma.courierSheetCollection.deleteMany(),
@@ -86,11 +87,12 @@ export class SettingsService {
     await this.prisma.$transaction([
       this.prisma.partyDeferredPayment.deleteMany(),
       this.prisma.partyDeferred.deleteMany(),
-      this.prisma.partyDrawing.deleteMany(),
-      // Also missing until now (Phase 24 incidental fix) — see the
-      // matching comment in resetSystem() above.
+      // Same FK-order fix as resetSystem() above — withdrawalApplication
+      // (and partySettlement, which it also references) must be deleted
+      // before partyDrawing, not after.
       this.prisma.withdrawalApplication.deleteMany(),
       this.prisma.partySettlement.deleteMany(),
+      this.prisma.partyDrawing.deleteMany(),
       // Ledger history only — Courier rows themselves are entities, kept
       // intact, exactly like Party is kept intact above.
       this.prisma.courierAdvanceRepayment.deleteMany(),
