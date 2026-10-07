@@ -10,7 +10,6 @@ export type SystemCategoryKey =
   | 'AGENT_COLLECTION'
   | 'MERCHANT_SENDER'
   | 'MERCHANT_DRAWING'
-  | 'MERCHANT_REDEPOSIT'
   | 'COURIER_SHEET_COLLECTION'
   | 'COURIER_ADVANCE'
   | 'COURIER_ADVANCE_REPAYMENT';
@@ -27,7 +26,13 @@ export const SYSTEM_CATEGORIES: {
   { systemKey: 'AGENT_COLLECTION', name: 'تحصيل من وكلاء المحافظات', kind: 'IN', partyType: 'AGENT' },
   { systemKey: 'MERCHANT_SENDER', name: 'رواسل', kind: 'OUT', partyType: 'MERCHANT' },
   { systemKey: 'MERCHANT_DRAWING', name: 'مسحوبات', kind: 'OUT', partyType: 'MERCHANT' },
-  { systemKey: 'MERCHANT_REDEPOSIT', name: 'إعادة إدخال مبلغ مسحوب', kind: 'IN', partyType: 'MERCHANT' },
+  // MERCHANT_REDEPOSIT ("إعادة إدخال مبلغ مسحوب") deliberately removed —
+  // the old "إعادة إدخال" redeposit flow it backed was fully replaced by
+  // the real settlement/withdrawal-application ledger. No code anywhere
+  // references this systemKey any longer (confirmed by a repo-wide grep
+  // before removing it). The live category row itself is retired, not
+  // deleted — see scripts/retire-merchant-redeposit-category.js — so any
+  // real historical transaction posted under it keeps its FK intact.
   { systemKey: 'COURIER_SHEET_COLLECTION', name: 'تحصيل شيتات مناديب القاهرة والجيزة', kind: 'IN' },
   { systemKey: 'COURIER_ADVANCE', name: 'سلفة مناديب', kind: 'OUT' },
   { systemKey: 'COURIER_ADVANCE_REPAYMENT', name: 'توريد سلفة مناديب', kind: 'IN' },
